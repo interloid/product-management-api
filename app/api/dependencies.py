@@ -1,5 +1,6 @@
-from fastapi import Depends, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from arq.connections import ArqRedis
+from fastapi import Cookie, Depends, Request
+from fastapi.security import HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -22,33 +23,40 @@ bearer_schema = HTTPBearer(
 )
 
 
+def get_arq_pool(request: Request) -> ArqRedis:
+    return request.app.state.arq_pool
+
+
 def get_auth_service(
     db: AsyncSession = Depends(get_db),
     redis: Redis = Depends(get_redis),
+    arq_pool: ArqRedis = Depends(get_arq_pool),
 ) -> AuthService:
-    return AuthService(db=db, redis=redis)
+    return AuthService(db=db, redis=redis, arq_pool=arq_pool)
 
 
 def get_product_service(
     db: AsyncSession = Depends(get_db),
     s3_service: S3Service = Depends(get_s3_service),
+    arq_pool: ArqRedis = Depends(get_arq_pool),
 ) -> ProductService:
-    return ProductService(db=db, s3_service=s3_service)
+    return ProductService(
+        db=db,
+        s3_service=s3_service,
+        arq_pool=arq_pool,
+    )
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Security(bearer_schema),
+    access_token: str | None = Cookie(default=None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
 
-    if credentials is None:
+    if access_token is None:
         raise UnauthorizedException(message="Authentication required")
 
-    if credentials.scheme.lower() != "bearer":
-        raise UnauthorizedException(message="Invalid authentication scheme")
-
     try:
-        decode_payload = decode_token(credentials.credentials)
+        decode_payload = decode_token(access_token)
 
         token_payload = validate_access_token_payload(decode_payload)
 

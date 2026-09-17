@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.smtp import send_email
 
@@ -8,6 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 template_env = Environment(
     loader=FileSystemLoader(BASE_DIR / "templates"),
+    autoescape=select_autoescape(["html", "xml"]),
 )
 
 

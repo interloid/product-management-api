@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, String, text
+from sqlalchemy import Boolean, String, Text, text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +47,11 @@ class User(BaseEntity):
         default=True,
         server_default=text("true"),
         nullable=False,
+    )
+
+    avatar_url: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     role: Mapped[RoleEnum] = mapped_column(

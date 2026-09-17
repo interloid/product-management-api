@@ -1,8 +1,9 @@
 import asyncio
 import hashlib
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from arq.connections import ArqRedis
 from fastapi import UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +25,7 @@ from app.models.product_model import Product
 from app.repositories.category_repo import CategoryRepository
 from app.repositories.product_image_repo import ProductImageRepository
 from app.repositories.product_repo import ProductRepository
+from app.schemas.image_jobs_schema import ProductImageUploadPayload
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 from app.services.base_service import BaseService
 from app.services.product_image_service import ProductImageService
@@ -44,8 +46,11 @@ class ProductService(BaseService[Product]):
 
     DEFAULT_SORT = "updated"
 
-    def __init__(self, db: AsyncSession, s3_service: S3Service) -> None:
+    def __init__(
+        self, db: AsyncSession, s3_service: S3Service, arq_pool: ArqRedis
+    ) -> None:
         super().__init__(db)
+        self.arq_pool = arq_pool
 
         self.product_repo = ProductRepository(db)
         self.category_repo = CategoryRepository(db)
@@ -151,7 +156,7 @@ class ProductService(BaseService[Product]):
         self,
         images: list[UploadFile],
     ) -> list[str]:
-        """Hash uploads and leave every stream ready for the S3 upload."""
+
         content_hashes: list[str] = []
 
         for image in images:
@@ -204,7 +209,8 @@ class ProductService(BaseService[Product]):
             description=payload.description,
         )
 
-        uploaded_object_keys: list[str] = []
+        staging_object_keys: list[str] = []
+        job_images: list[ProductImageUploadPayload] = []
 
         try:
             product = await self.product_repo.create(
@@ -214,17 +220,56 @@ class ProductService(BaseService[Product]):
             for index, (image, content_hash) in enumerate(
                 zip(images, content_hashes, strict=True)
             ):
-                data = await image.read()
-                product_image = await self.product_image_service.upload_image(
-                    product_id=product.id,
-                    data=data,
-                    filename=image.filename or "image",
-                    content_type=image.content_type or "application/octet-stream",
-                    content_hash=content_hash,
-                    is_primary=(index == 0),
+                image_id = uuid4()
+
+                content_type = image.content_type
+                if content_type is None:
+                    raise BadRequestException(
+                        message="Image content type is required",
+                    )
+
+                extension = ProductImageConstants.EXTENSION_BY_CONTENT_TYPE.get(
+                    content_type
                 )
 
-                uploaded_object_keys.append(product_image.object_key)
+                if extension is None:
+                    raise BadRequestException(
+                        message=f"Unsupported image type '{content_type}'",
+                    )
+
+                staging_key = (
+                    f"staging/products/{product.id}/images/{image_id}.{extension}"
+                )
+
+                staging_object_keys.append(staging_key)
+
+                data = await image.read()
+
+                await self.product_image_service.s3_service.upload_file(
+                    data=data,
+                    object_key=staging_key,
+                    content_type=content_type,
+                )
+
+                job_images.append(
+                    ProductImageUploadPayload(
+                        image_id=str(image_id),
+                        staging_key=staging_key,
+                        extension=extension,
+                        content_type=content_type,
+                        content_hash=content_hash,
+                        is_primary=(index == 0),
+                    )
+                )
+
+            await self.db.commit()
+
+            await self.arq_pool.enqueue_job(
+                "upload_product_images",
+                str(product.id),
+                [image.model_dump(mode="json") for image in job_images],
+                _expires=86_400,
+            )
 
             product = await self.product_repo.get_by_id(
                 product_id=product.id,
@@ -238,16 +283,14 @@ class ProductService(BaseService[Product]):
 
         except IntegrityError as exc:
             await self.db.rollback()
-            await self._cleanup_s3(uploaded_object_keys)
+            await self._cleanup_s3(staging_object_keys)
             raise ConflictException(
-                message=(
-                    "Product could not be created because of a conflicting resource"
-                ),
+                message=("Product already exists"),
             ) from exc
 
         except Exception:
             await self.db.rollback()
-            await self._cleanup_s3(uploaded_object_keys)
+            await self._cleanup_s3(staging_object_keys)
             raise
 
     async def get_product(self, product_id: UUID) -> Product:
@@ -378,7 +421,6 @@ class ProductService(BaseService[Product]):
         )
 
         if product is None:
-            logger.warning("product not found | product_id=%s", product_id)
             raise NotFoundException(
                 message="Product not found",
             )
@@ -387,26 +429,37 @@ class ProductService(BaseService[Product]):
 
         removed_image_id_set = set(removed_image_ids or [])
         current_image_ids = {image.id for image in product.images}
+
         unknown_image_ids = removed_image_id_set - current_image_ids
 
         if unknown_image_ids:
-            logger.warning(
-                "Product image not found during update | product_id=%s | image_ids=%s",
-                product_id,
-                unknown_image_ids,
+            raise NotFoundException(
+                message="Product image not found",
             )
-            raise NotFoundException(message="Product image not found")
 
-        resulting_image_count = (
-            len(product.images) - len(removed_image_id_set) + len(images)
+        if primary_image_id is not None:
+            if primary_image_id not in current_image_ids:
+                raise NotFoundException(
+                    message="Primary image not found for this product",
+                )
+
+            if primary_image_id in removed_image_id_set:
+                raise BadRequestException(
+                    message="Primary image cannot also be removed",
+                )
+
+        retained_images = [
+            image for image in product.images if image.id not in removed_image_id_set
+        ]
+
+        retained_primary_image_id = next(
+            (image.id for image in retained_images if image.is_primary),
+            None,
         )
 
+        resulting_image_count = len(retained_images) + len(images)
+
         if resulting_image_count > ProductImageConstants.MAX_IMAGES:
-            logger.warning(
-                "Product image limit exceeded | product_id=%s | image_count=%s",
-                product_id,
-                resulting_image_count,
-            )
             raise BadRequestException(
                 message=(
                     f"Maximum {ProductImageConstants.MAX_IMAGES} images are allowed"
@@ -414,11 +467,13 @@ class ProductService(BaseService[Product]):
             )
 
         content_hashes = await self._hash_product_images(images)
+
         retained_hashes = {
             image.content_hash
-            for image in product.images
-            if image.id not in removed_image_id_set and image.content_hash is not None
+            for image in retained_images
+            if image.content_hash is not None
         }
+
         if retained_hashes.intersection(content_hashes):
             raise ConflictException(
                 message="Duplicate images are not allowed",
@@ -432,9 +487,6 @@ class ProductService(BaseService[Product]):
             )
 
             if existing_product is not None and existing_product.id != product.id:
-                logger.warning(
-                    "Product with this SKU already exists | sku=%s", updates["sku"]
-                )
                 raise ConflictException(
                     message="Product with this SKU already exists",
                 )
@@ -447,7 +499,6 @@ class ProductService(BaseService[Product]):
             )
 
             if category is None:
-                logger.warning("Category not found | category=%s", category)
                 raise NotFoundException(
                     message="Category not found",
                 )
@@ -459,43 +510,27 @@ class ProductService(BaseService[Product]):
             setattr(product, field, value)
 
         images_to_delete: list[str] = []
-        uploaded_object_keys: list[str] = []
+        staging_object_keys: list[str] = []
+        job_images: list[ProductImageUploadPayload] = []
 
         try:
             product = await self.product_repo.update(
                 product=product,
             )
 
-            if removed_image_ids:
+            if removed_image_id_set:
                 images_to_remove = await self.product_image_service.get_images(
-                    image_ids=removed_image_ids,
+                    image_ids=list(removed_image_id_set),
                     product_id=product_id,
                 )
-
-                found_ids = {image.id for image in images_to_remove}
-                missing_ids = set(removed_image_ids) - found_ids
-
-                if missing_ids:
-                    raise NotFoundException(
-                        message="One or more product images were not found",
-                    )
 
                 images_to_delete.extend(image.object_key for image in images_to_remove)
 
                 image_repo = self.product_image_service.product_image_repo
-                await image_repo.delete_by_ids_and_product(
-                    image_ids=removed_image_ids,
-                    product_id=product_id,
-                )
 
-            if images:
-                uploaded_images = await self.product_image_service.add_images(
-                    product_id=product.id,
-                    images=images,
-                    content_hashes=content_hashes,
-                )
-                uploaded_object_keys.extend(
-                    image.object_key for image in uploaded_images
+                await image_repo.delete_by_ids_and_product(
+                    image_ids=list(removed_image_id_set),
+                    product_id=product_id,
                 )
 
             if primary_image_id is not None:
@@ -504,24 +539,65 @@ class ProductService(BaseService[Product]):
                     product_id=product.id,
                 )
 
-            product = await self.product_repo.get_by_id(product.id)
+            elif retained_primary_image_id is None and not images and retained_images:
+                await self.product_image_service.set_primary_image(
+                    image_id=retained_images[0].id,
+                    product_id=product.id,
+                )
 
-            if product is None:
-                raise NotFoundException(message="Product not found")
+            for index, (image, content_hash) in enumerate(
+                zip(images, content_hashes, strict=True)
+            ):
+                image_id = uuid4()
+                content_type = image.content_type
+                if content_type is None:
+                    raise BadRequestException(
+                        message="Image content type is required",
+                    )
+                extension = ProductImageConstants.EXTENSION_BY_CONTENT_TYPE.get(
+                    content_type
+                )
 
-            await self.db.refresh(product, ["images", "category"])
+                if extension is None:
+                    raise BadRequestException(
+                        message=(f"Unsupported image type '{content_type}'"),
+                    )
 
-            await self._cleanup_s3(images_to_delete)
+                staging_key = (
+                    f"staging/products/{product.id}/images/{image_id}.{extension}"
+                )
 
-            return product
+                staging_object_keys.append(staging_key)
+
+                data = await image.read()
+
+                await self.product_image_service.s3_service.upload_file(
+                    data=data,
+                    object_key=staging_key,
+                    content_type=content_type,
+                )
+
+                job_images.append(
+                    ProductImageUploadPayload(
+                        image_id=str(image_id),
+                        staging_key=staging_key,
+                        extension=extension,
+                        content_type=content_type,
+                        content_hash=content_hash,
+                        is_primary=(
+                            index == 0
+                            and primary_image_id is None
+                            and retained_primary_image_id is None
+                        ),
+                    )
+                )
+
+            await self.db.commit()
 
         except IntegrityError as exc:
             await self.db.rollback()
-            await self._cleanup_s3(uploaded_object_keys)
+            await self._cleanup_s3(staging_object_keys)
 
-            logger.warning(
-                "Product could not be updated because of a conflicting resource"
-            )
             raise ConflictException(
                 message=(
                     "Product could not be updated because of a conflicting resource"
@@ -530,8 +606,46 @@ class ProductService(BaseService[Product]):
 
         except Exception:
             await self.db.rollback()
-            await self._cleanup_s3(uploaded_object_keys)
+            await self._cleanup_s3(staging_object_keys)
             raise
+
+        try:
+            await self._enqueue_s3_cleanup(images_to_delete)
+        except Exception:
+            logger.exception("Failed to enqueue S3 cleanup after product update")
+
+        if job_images:
+            job = await self.arq_pool.enqueue_job(
+                "upload_product_images",
+                str(product.id),
+                job_images,
+                _expires=86_400,
+            )
+
+            if job is None:
+                logger.error(
+                    "Product image job was not queued | product_id=%s",
+                    product.id,
+                )
+                raise RuntimeError(
+                    "Product image processing could not be queued",
+                )
+
+        product = await self.product_repo.get_by_id(
+            product_id=product.id,
+        )
+
+        if product is None:
+            raise NotFoundException(
+                message="Product not found",
+            )
+
+        await self.db.refresh(
+            product,
+            ["images", "category"],
+        )
+
+        return product
 
     async def delete_product(self, product_id: UUID) -> None:
 
@@ -548,4 +662,22 @@ class ProductService(BaseService[Product]):
         await self.product_repo.delete(product=product)
         await self.db.commit()
 
-        await self._cleanup_s3(object_keys)
+        try:
+            await self._enqueue_s3_cleanup(object_keys)
+
+        except Exception:
+            logger.exception("Failed to enqueue S3 cleanup after product deletion")
+
+    async def _enqueue_s3_cleanup(
+        self,
+        object_keys: list[str],
+    ) -> None:
+
+        if not object_keys:
+            return
+
+        await self.arq_pool.enqueue_job(
+            "delete_s3_jobs",
+            object_keys,
+            _expires=86_400,
+        )

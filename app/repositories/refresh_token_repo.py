@@ -68,9 +68,10 @@ class RefreshTokenRepository:
         )
         await self.db.execute(stmt)
 
-    async def delete_expired(self, now: datetime) -> None:
+    async def delete_expired(self, now: datetime) -> int:
 
         stmt = delete(RefreshToken).where(
-            RefreshToken.expires_at < now,
+            RefreshToken.expires_at <= now,
         )
-        await self.db.execute(stmt)
+        result = await self.db.execute(stmt)
+        return result.rowcount or 0

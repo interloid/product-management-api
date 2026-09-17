@@ -30,6 +30,12 @@ class ProductImageConstants:
         "image/webp",
     }
 
+    EXTENSION_BY_CONTENT_TYPE = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }
+
 
 class RoleEnum(StrEnum):
     VIEWER = "viewer"

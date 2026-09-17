@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -39,6 +39,33 @@ async def app_exception_handler(
     )
 
 
+def format_validation_message(
+    error: dict[str, Any],
+    field: str,
+) -> str:
+    error_type = error.get("type")
+    context = error.get("ctx", {})
+
+    if error_type == "missing":
+        return "This field is required"
+
+    if error_type == "string_too_short":
+        min_length = context.get("min_length")
+        return f"Must contain at least {min_length} characters"
+
+    if error_type == "string_too_long":
+        max_length = context.get("max_length")
+        return f"Must be at most {max_length} characters"
+
+    if error_type == "string_pattern_mismatch":
+        return "Invalid format"
+
+    if field == "email" and error_type == "value_error":
+        return "Enter a valid email address"
+
+    return str(error.get("msg", "Invalid value"))
+
+
 async def http_exception_handler(
     request: Request,
     exc: HTTPException,
@@ -67,44 +94,49 @@ async def validation_exception_handler(
     request: Request,
     exc: RequestValidationError,
 ):
-    logger.warning(
-        "Validation error | %s",
-        exc.errors(),
-    )
-
-    errors = []
+    details: dict[str, str] = {}
 
     for error in exc.errors():
-        sanitized_error = {
-            "type": error.get("type"),
-            "loc": list(error.get("loc", [])),
-            "msg": error.get("msg"),
-        }
+        location = [
+            str(part)
+            for part in error.get("loc", ())
+            if part
+            not in {
+                "body",
+                "query",
+                "path",
+                "header",
+                "cookie",
+            }
+        ]
 
-        if "input" in error:
-            input_value = error["input"]
+        field = ".".join(location) or "request"
 
-            if isinstance(input_value, (str, int, float, bool)) or input_value is None:
-                sanitized_error["input"] = input_value
-            else:
-                sanitized_error["input"] = str(input_value)
+        details.setdefault(
+            field,
+            format_validation_message(
+                error=error,
+                field=field,
+            ),
+        )
 
-        errors.append(sanitized_error)
+    logger.warning(
+        "Validation failed | fields=%s",
+        list(details),
+    )
 
     response = ErrorResponse(
         message="Validation failed",
         error=ErrorDetail(
             code="VALIDATION_ERROR",
-            details={
-                "errors": errors,
-            },
+            details=details,
         ),
         request_id=request_id_ctx.get(),
     )
 
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content=response.model_dump(),
+        content=response.model_dump(mode="json"),
     )
 
 
