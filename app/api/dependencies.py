@@ -1,6 +1,6 @@
 from arq.connections import ArqRedis
-from fastapi import Depends, Request, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Cookie, Depends, Request
+from fastapi.security import HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -48,18 +48,15 @@ def get_product_service(
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Security(bearer_schema),
+    access_token: str | None = Cookie(default=None, alias="access_token"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
 
-    if credentials is None:
+    if access_token is None:
         raise UnauthorizedException(message="Authentication required")
 
-    if credentials.scheme.lower() != "bearer":
-        raise UnauthorizedException(message="Invalid authentication scheme")
-
     try:
-        decode_payload = decode_token(credentials.credentials)
+        decode_payload = decode_token(access_token)
 
         token_payload = validate_access_token_payload(decode_payload)
 

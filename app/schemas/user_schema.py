@@ -19,5 +19,6 @@ class UserResponse(UserBase):
     email: EmailStr
     first_name: str
     last_name: str
+    avatar_url: str | None = None
     is_active: bool
     role: RoleEnum

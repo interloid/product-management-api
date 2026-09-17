@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Request
 
@@ -28,22 +29,17 @@ class S3Service:
             Key=object_key,
         )
 
-    async def generate_presigned_urls(
-        self, object_keys: list[str], expires_in: int = 3600
+    async def generate_cloudfront_urls(
+        self,
+        object_keys: list[str],
     ) -> dict[str, str]:
-        if not object_keys:
-            return {}
 
-        presigned_urls: dict[str, str] = {}
+        base_url = str(settings.CLOUDFRONT_BASE_URL).rstrip("/")
 
-        for object_key in object_keys:
-            presigned_urls[object_key] = await self.client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.bucket_name, "Key": object_key},
-                ExpiresIn=expires_in,
-            )
-
-        return presigned_urls
+        return {
+            object_key: (f"{base_url}/{quote(object_key.lstrip('/'), safe='/')}")
+            for object_key in object_keys
+        }
 
 
 def get_s3_service(request: Request) -> S3Service:

@@ -21,9 +21,13 @@ class ProductCreate(BaseSchema):
     category_name: str
     price: Decimal = Field(
         ge=1,
+        le=Decimal("9999999999.99"),
+        max_digits=12,
+        decimal_places=2,
     )
     stock: int = Field(
         ge=0,
+        le=2_147_483_647,
     )
     status: ProductStatusEnum
     description: str | None = None
@@ -48,10 +52,14 @@ class ProductUpdate(BaseSchema):
     price: Decimal | None = Field(
         default=None,
         ge=1,
+        le=Decimal("9999999999.99"),
+        max_digits=12,
+        decimal_places=2,
     )
     stock: int | None = Field(
         default=None,
         ge=0,
+        le=2_147_483_647,
     )
     status: ProductStatusEnum | None = None
     description: str | None = None

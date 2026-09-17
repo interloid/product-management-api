@@ -1,4 +1,4 @@
-from pydantic import SecretStr, field_validator
+from pydantic import AnyHttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    ACCESS_TOKEN_COOKIE_NAME: str = "access_token"
     REFRESH_TOKEN_COOKIE_NAME: str = "refresh_token"
 
     SESSION_EXPIRE_DAYS: int = 7
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: SecretStr | None = None
     AWS_REGION: str
     S3_BUCKET_NAME: str
+    CLOUDFRONT_BASE_URL: AnyHttpUrl
 
     SMTP_HOST: str
     SMTP_PORT: int = 587
@@ -85,6 +87,25 @@ class Settings(BaseSettings):
     def validate(cls, value: SecretStr) -> SecretStr:
         if len(value.get_secret_value()) < 32:
             raise ValueError("Security secrets must contain at least 32 characters")
+        return value
+
+    @field_validator("CLOUDFRONT_BASE_URL", mode="after")
+    @classmethod
+    def validate_cloudfront_base_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+
+        if value.scheme != "https":
+            raise ValueError("CLOUDFRONT BASE URL must use HTTPS")
+
+        if value.query is not None:
+            raise ValueError(
+                "CLOUDFRONT BASE URL must not contain query parameters",
+            )
+
+        if value.fragment is not None:
+            raise ValueError(
+                "CLOUDFRONTBASE URL must not contain a URL fragment",
+            )
+
         return value
 
 

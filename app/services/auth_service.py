@@ -15,7 +15,7 @@ from app.core.oauth.config import OAUTH_PROVIDERS
 from app.core.oauth.state import generate_oauth_state
 from app.core.passcode import (
     check_passcode_request_limit,
-    delete_passcode,
+    consume_passcode,
     generate_passcode,
     get_passcode,
     get_passcode_attempt_ttl,
@@ -51,8 +51,6 @@ from app.repositories import (
 )
 from app.schemas.auth_schema import (
     LoginRequest,
-    LoginResponse,
-    TokenResponse,
 )
 from app.schemas.response import ApiResponse
 from app.utils.helpers import utc_now
@@ -98,7 +96,8 @@ class AuthService:
         *,
         user: User,
         refresh_expire_days: int,
-    ) -> tuple[LoginResponse, str, int]:
+    ) -> tuple[str, str, int]:
+
         access_token = create_access_token({"sub": str(user.id)})
 
         (
@@ -109,26 +108,12 @@ class AuthService:
             expire_days=refresh_expire_days,
         )
 
-        # login_response = LoginResponse(
-        #     access_token=access_token,
-        #     token_type="bearer",
-        #     expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        #     user=UserResponse(
-        #         id=user.id,
-        #         email=user.email,
-        #         first_name=user.first_name,
-        #         last_name=user.last_name,
-        #         is_active=user.is_active,
-        #         role=user.role,
-        #     ),
-        # )
-
         return access_token, raw_refresh_token, refresh_max_age
 
     async def login(
         self,
         login_data: LoginRequest,
-    ) -> tuple[ApiResponse[LoginResponse], str, int]:
+    ) -> tuple[ApiResponse[None], str, str, int]:
 
         try:
             user = await self.user_repo.get_by_email(login_data.email)
@@ -174,10 +159,7 @@ class AuthService:
             logger.exception("Unexpected error")
             raise
 
-        result = ApiResponse[None](
-            message="Login successful",
-            # data=login_response,
-        )
+        result = ApiResponse[None](message="Login successful")
         return result, access_token, raw_refresh_token, refresh_max_age
 
     async def _handle_refresh_token(
@@ -199,7 +181,7 @@ class AuthService:
     async def refresh_token(
         self,
         raw_refresh_token: str | None,
-    ) -> tuple[ApiResponse[TokenResponse], str, int]:
+    ) -> tuple[ApiResponse[None], str, str, int]:
 
         try:
             if raw_refresh_token is None:
@@ -233,6 +215,7 @@ class AuthService:
 
             if user is None or not user.is_active:
                 await self.refresh_token_repo.revoke_all_for_user(stored_token.user_id)
+                await self.db.commit()
                 raise UnauthorizedException(message="Invalid refresh token")
 
             stored_token.is_revoked = True
@@ -265,17 +248,14 @@ class AuthService:
                 stored_token.family_id,
             )
 
-            result = ApiResponse[TokenResponse](
+            result = ApiResponse[None](
                 message="Token refreshed successfully",
-                data=TokenResponse(
-                    access_token=access_token,
-                    token_type="bearer",
-                    expires_in=(settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60),
-                ),
+                data=None,
             )
 
             return (
                 result,
+                access_token,
                 new_raw_refresh_token,
                 remaining_seconds,
             )
@@ -404,7 +384,7 @@ class AuthService:
         email: str,
         passcode: str,
         redis: Redis,
-    ) -> tuple[ApiResponse[LoginResponse], str, int]:
+    ) -> tuple[ApiResponse[None], str, str, int]:
 
         try:
             email = email.strip().lower()
@@ -496,10 +476,14 @@ class AuthService:
                     details=details,
                 )
 
-            await delete_passcode(
+            if not await consume_passcode(
                 redis=redis,
                 email=email,
-            )
+                expected_hash=stored_hash,
+            ):
+                raise UnauthorizedException(
+                    message="Invalid or expired passcode.",
+                )
 
             await reset_passcode_attempts(
                 redis=redis,
@@ -517,7 +501,7 @@ class AuthService:
             logger.info("User logged in Successfully | email=%s", email)
 
             (
-                login_response,
+                access_token,
                 raw_refresh_token,
                 refresh_max_age,
             ) = await self._issue_token_pair(
@@ -537,10 +521,11 @@ class AuthService:
             raise
 
         return (
-            ApiResponse[LoginResponse](
+            ApiResponse[None](
                 message="Login successful",
-                data=login_response,
+                data=None,
             ),
+            access_token,
             raw_refresh_token,
             refresh_max_age,
         )
@@ -634,7 +619,7 @@ class AuthService:
         provider: str,
         code: str,
         state: str,
-    ) -> tuple[ApiResponse[LoginResponse], str, int]:
+    ) -> tuple[ApiResponse[None], str, str, int]:
         try:
             await self.validate_oauth_state(
                 provider=provider,
@@ -687,10 +672,13 @@ class AuthService:
 
                 userinfo = userinfo_response.json()
 
+                if provider == "github":
+                    email = await self.get_github_email(client)
+
             if provider == "github":
                 provider_user_id = str(userinfo["id"])
 
-                email = await self.get_github_email(client)
+                avatar_url = userinfo.get("avatar_url")
 
                 full_name = userinfo.get("name") or userinfo.get("login", "")
                 name_parts = full_name.split(maxsplit=1)
@@ -702,6 +690,8 @@ class AuthService:
                 provider_user_id = userinfo["sub"]
 
                 email = userinfo.get("email")
+
+                avatar_url = userinfo.get("picture")
 
                 if not email:
                     logger.warning(
@@ -724,6 +714,8 @@ class AuthService:
                 provider_user_id = userinfo["sub"]
 
                 email = userinfo.get("email")
+
+                avatar_url = None
 
                 if not email:
                     logger.warning(
@@ -761,6 +753,10 @@ class AuthService:
                         message="User associated with OAuth identity not found",
                     )
 
+                if user.avatar_url is None and avatar_url is not None:
+                    user.avatar_url = avatar_url
+                    await self.db.flush()
+
             else:
                 user = await self.user_repo.get_by_email(email)
 
@@ -779,6 +775,7 @@ class AuthService:
                     email=email,
                     first_name=first_name,
                     last_name=last_name,
+                    avatar_url=avatar_url,
                 )
 
                 user = await self.user_repo.create(user)
@@ -803,8 +800,17 @@ class AuthService:
                 email,
             )
 
+            logger.info(
+                "OAuth avatar | provider=%s user_id=%s "
+                "provider_avatar_present=%s stored_avatar_present=%s",
+                provider,
+                user.id,
+                bool(avatar_url),
+                bool(user.avatar_url),
+            )
+
             (
-                login_response,
+                access_token,
                 raw_refresh_token,
                 refresh_max_age,
             ) = await self._issue_token_pair(
@@ -813,10 +819,11 @@ class AuthService:
             )
 
             return (
-                ApiResponse[LoginResponse](
+                ApiResponse[None](
                     message=f"{provider.capitalize()} authentication successful",
-                    data=login_response,
+                    data=None,
                 ),
+                access_token,
                 raw_refresh_token,
                 refresh_max_age,
             )

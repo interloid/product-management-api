@@ -34,8 +34,18 @@ router = APIRouter(
 
 def build_product_response(
     product: Product,
-    presigned_urls: dict[str, str],
+    image_urls: dict[str, str],
 ) -> ProductResponse:
+
+    ordered_images = sorted(
+        product.images,
+        key=lambda image: (
+            not image.is_primary,
+            image.created_at,
+            str(image.id),
+        ),
+    )
+
     return ProductResponse(
         id=product.id,
         name=product.name,
@@ -48,10 +58,10 @@ def build_product_response(
         images=[
             ProductImageResponse(
                 id=image.id,
-                url=presigned_urls[image.object_key],
+                url=image_urls[image.object_key],
                 is_primary=image.is_primary,
             )
-            for image in product.images
+            for image in ordered_images
         ],
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -62,30 +72,37 @@ async def to_product_responses(
     products: list[Product],
     s3_service: S3Service,
 ) -> list[ProductResponse]:
-    object_keys = [image.object_key for product in products for image in product.images]
 
-    presigned_urls = await s3_service.generate_presigned_urls(
-        object_keys=object_keys,
-    )
+    responses: list[ProductResponse] = []
 
-    return [
-        build_product_response(
-            product=product,
-            presigned_urls=presigned_urls,
+    for product in products:
+        cloudfront_url = await s3_service.generate_cloudfront_urls(
+            object_keys=[image.object_key for image in product.images],
         )
-        for product in products
-    ]
+
+        responses.append(
+            build_product_response(
+                product=product,
+                image_urls=cloudfront_url,
+            )
+        )
+
+    return responses
 
 
 async def to_product_response(
     product: Product,
     s3_service: S3Service,
 ) -> ProductResponse:
-    responses = await to_product_responses(
-        products=[product],
-        s3_service=s3_service,
+
+    cloudfront_urls = await s3_service.generate_cloudfront_urls(
+        object_keys=[image.object_key for image in product.images],
     )
-    return responses[0]
+
+    return build_product_response(
+        product=product,
+        image_urls=cloudfront_urls,
+    )
 
 
 @router.post(

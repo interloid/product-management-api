@@ -1,8 +1,10 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.asyncio import Redis
 
 from app.core.passcode import (
+    consume_passcode,
     delete_passcode,
     generate_passcode,
     get_passcode,
@@ -15,6 +17,27 @@ from app.core.passcode import (
     store_passcode,
 )
 from app.core.settings import settings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redis_result", [0, 1])
+async def test_consume_passcode_sends_valid_eval_command(redis_result):
+    # Use the real client's EVAL argument handling without opening a connection.
+    async with Redis(decode_responses=True) as redis:
+        with patch.object(
+            redis, "execute_command", new=AsyncMock(return_value=redis_result)
+        ) as execute:
+            result = await consume_passcode(redis, "user@example.com", "stored-hash")
+
+    assert result is (redis_result == 1)
+    execute.assert_awaited_once()
+    command, script, numkeys, *keys_and_args = execute.await_args.args
+    assert command == "EVAL"
+    assert isinstance(script, str)
+    assert "redis.call('GET', KEYS[1]) == ARGV[1]" in script
+    assert "redis.call('DEL', KEYS[1])" in script
+    assert numkeys == 1
+    assert keys_and_args == ["auth:passcode:user@example.com", "stored-hash"]
 
 
 def test_generate_passcode_returns_six_digit_string():

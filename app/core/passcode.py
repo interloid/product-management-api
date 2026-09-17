@@ -49,6 +49,22 @@ async def delete_passcode(redis: Redis, email: str) -> None:
     await redis.delete(key)
 
 
+async def consume_passcode(redis: Redis, email: str, expected_hash: str) -> bool:
+
+    result = await redis.eval(
+        """
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        get_passcode_key(email),
+        expected_hash,
+    )
+    return result == 1
+
+
 async def get_passcode_attempts(redis: Redis, email: str) -> int:
 
     key = get_passcode_attempt_key(email)

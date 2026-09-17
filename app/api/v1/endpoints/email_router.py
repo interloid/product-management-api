@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from redis.asyncio import Redis
 
 from app.api.dependencies import get_auth_service
-from app.core.settings import settings
+from app.api.v1.endpoints.auth_router import set_cookie
 from app.db.redis import get_redis
 from app.exceptions.global_exception import AUTH_ERROR_RESPONSES
 from app.schemas.auth_schema import (
@@ -20,7 +20,7 @@ router = APIRouter(
 
 
 @router.post(
-    "/passcode/request",
+    "/passcode/requests",
     response_model=ApiResponse[None],
     responses=AUTH_ERROR_RESPONSES,
 )
@@ -51,35 +51,24 @@ async def verify_passcode(
     response: Response,
     redis: Redis = Depends(get_redis),
     service: AuthService = Depends(get_auth_service),
-) -> ApiResponse[LoginResponse]:
+) -> tuple[ApiResponse[None], str, str, int]:
 
-    (result, raw_refresh_token, refresh_max_age) = await service.verify_email_passcode(
+    (
+        result,
+        access_token,
+        raw_refresh_token,
+        refresh_max_age,
+    ) = await service.verify_email_passcode(
         email=login_data.email,
         passcode=login_data.passcode,
         redis=redis,
     )
 
-    set_refresh_token_cookie(
+    set_cookie(
         response=response,
+        access_token=access_token,
         raw_refresh_token=raw_refresh_token,
-        max_age=refresh_max_age,
+        refresh_max_age=refresh_max_age,
     )
 
     return result
-
-
-def set_refresh_token_cookie(
-    *,
-    response: Response,
-    raw_refresh_token: str,
-    max_age: int,
-) -> None:
-    response.set_cookie(
-        key=settings.REFRESH_TOKEN_COOKIE_NAME,
-        value=raw_refresh_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-        max_age=max_age,
-    )
