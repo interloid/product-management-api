@@ -18,7 +18,6 @@ from app.services.product_service import ProductService
 
 
 def make_service(db=None, *, commit_error=None):
-    """Create a ProductService with all dependencies mocked."""
     db = db or MagicMock()
     if commit_error is not None:
         db.commit = AsyncMock(side_effect=commit_error)

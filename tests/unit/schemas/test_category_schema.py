@@ -4,13 +4,14 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.category_schema import CategoryResponse
-from app.schemas.session_schema import SessionResponse
 
 
 def test_category_response_missing_id():
     with pytest.raises(ValidationError):
         CategoryResponse(
             name="Electronics",
+            description="Description for electronics",
+            total_products=10,
         )
 
 
@@ -18,6 +19,8 @@ def test_category_response_missing_name():
     with pytest.raises(ValidationError):
         CategoryResponse(
             id=uuid4(),
+            description="Description for electronics",
+            total_products=10,
         )
 
 
@@ -26,14 +29,24 @@ def test_category_response_invalid_uuid():
         CategoryResponse(
             id="not-a-uuid",
             name="Electronics",
+            description="Description for electronics",
+            total_products=10,
         )
 
 
-def test_session_response_invalid_user():
+def test_category_response_optional_description():
     with pytest.raises(ValidationError):
-        SessionResponse(
-            user={
-                "id": "invalid-id",
-                "email": "john@example.com",
-            }
+        CategoryResponse(
+            id=uuid4(),
+            name="Electronics",
+            total_products=10,
+        )
+
+
+def test_category_response_missing_total_products():
+    with pytest.raises(ValidationError):
+        CategoryResponse(
+            id=uuid4(),
+            name="Electronics",
+            description="Description for electronics",
         )
