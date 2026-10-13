@@ -1635,7 +1635,6 @@ dependencies = [
     { name = "pydantic", extra = ["email"] },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
-    { name = "pytest-dotenv" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "python-slugify" },
@@ -1654,6 +1653,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pytest-dotenv" },
     { name = "ruff" },
     { name = "types-authlib" },
 ]
@@ -1675,7 +1675,6 @@ requires-dist = [
     { name = "pydantic", extras = ["email"], specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pyjwt", specifier = ">=2.13.0" },
-    { name = "pytest-dotenv", specifier = ">=0.5.2" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "python-slugify", specifier = ">=8.0.4" },
@@ -1694,6 +1693,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-dotenv", specifier = ">=0.5.2" },
     { name = "ruff", specifier = ">=0.12.11" },
     { name = "types-authlib", specifier = ">=1.7.2.20260807" },
 ]

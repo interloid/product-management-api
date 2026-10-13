@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -246,19 +247,20 @@ async def test_refresh_token_success(
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_missing(
-    test_auth_service,
-):
+async def test_refresh_token_missing(test_auth_service):
     test_auth_service.db.rollback = AsyncMock()
     test_auth_service.refresh_token_repo.get_by_token_hash_for_update = AsyncMock(
-        retturn_value=None
+        return_value=None
     )
 
-    with pytest.raises(UnauthorizedException, match="Refresh token is required"):
+    with pytest.raises(
+        UnauthorizedException,
+        match="Refresh token is required",
+    ):
         await test_auth_service.refresh_token(None)
 
-        test_auth_service.db.rollback.assert_awaited_once()
-        test_auth_service.refresh_token_repo.get_by_token_hash_for_update.assert_awaited_once()
+    test_auth_service.db.rollback.assert_awaited_once()
+    test_auth_service.refresh_token_repo.get_by_token_hash_for_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -701,13 +703,22 @@ async def test_start_oauth_success(
     provider = "google"
     state = "test-oauth-state"
 
-    mock_generate_oauth_state.return_value = state
+    config = replace(
+        OAUTH_PROVIDERS[provider],
+        client_secret="test-client-secret",
+    )
 
-    config = OAUTH_PROVIDERS[provider]
+    with patch(
+        "app.services.auth_service.OAUTH_PROVIDERS",
+        {provider: config},
+    ):
+        mock_generate_oauth_state.return_value = state
 
-    test_auth_service.oauth_state_repo.create = AsyncMock()
+        config = OAUTH_PROVIDERS[provider]
 
-    authorization_url = await test_auth_service.start_oauth(provider)
+        test_auth_service.oauth_state_repo.create = AsyncMock()
+
+        authorization_url = await test_auth_service.start_oauth(provider)
 
     mock_generate_oauth_state.assert_called_once_with()
 

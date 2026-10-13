@@ -1,10 +1,11 @@
 from decimal import Decimal
 from io import BytesIO
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi import UploadFile
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from app.core.constants import ProductImageConstants, ProductStatusEnum
@@ -209,6 +210,8 @@ async def test_create_product_continues_when_post_commit_side_effects_fail():
     assert (
         await service.create_product(make_create_payload(), [], "request")
     ) is product
+    service.product_image_service.s3_service.delete_file.assert_not_awaited()
+    service.db.rollback.assert_not_awaited()
     service.db.commit.assert_awaited_once()
     service.db.rollback.assert_not_awaited()
 
@@ -473,6 +476,8 @@ async def test_update_product_replaces_images_and_continues_on_post_commit_error
     )
 
     assert result is product
+    service.product_image_service.s3_service.delete_file.assert_not_awaited()
+    service.db.rollback.assert_not_awaited()
     service.db.commit.assert_awaited_once()
     service.db.refresh.assert_awaited_once_with(product, ["images", "category"])
 
@@ -537,17 +542,21 @@ async def test_update_product_sets_requested_primary_image():
 async def test_update_product_logs_when_image_job_returns_none():
     service = make_service()
     product = Product(id=uuid4(), name="Phone", sku="PHONE-1")
+
     service.product_repo.get_by_id = AsyncMock(side_effect=[product, product])
     service.product_repo.update = AsyncMock(return_value=product)
     service._hash_product_images = AsyncMock(return_value=["new-hash"])
     service.arq_pool.enqueue_job = AsyncMock(return_value=None)
 
-    await service.update_product(
-        product_id=product.id,
-        payload=ProductUpdate(name="Updated"),
-        images=[make_upload()],
-        request_id="request",
-    )
+    with patch("app.services.product_service.logger.error") as mock_logger_error:
+        await service.update_product(
+            product_id=product.id,
+            payload=ProductUpdate(name="Updated"),
+            images=[make_upload()],
+            request_id="request",
+        )
+
+    mock_logger_error.assert_called()
 
 
 @pytest.mark.asyncio
@@ -570,6 +579,21 @@ async def test_list_products_builds_all_optional_filters(in_stock):
 
     assert result == (products, 1)
     service.paginate.assert_awaited_once()
+    stmt = service.paginate.await_args.args[0]
+    compiled = stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    )
+    sql = str(compiled)
+
+    assert "products.price >= 1.00" in sql
+    assert "products.price <= 50.00" in sql
+    assert "products.status =" in sql
+
+    if in_stock:
+        assert "products.stock > 0" in sql
+    else:
+        assert "products.stock = 0" in sql
 
 
 @pytest.mark.asyncio
@@ -613,19 +637,26 @@ async def test_update_product_logs_cache_invalidation_error_after_category_chang
     service = make_service()
     product = Product(id=uuid4(), name="Phone", sku="PHONE-1", category_id=uuid4())
     category = Category(id=uuid4(), name="New category")
+
     service.product_repo.get_by_id = AsyncMock(side_effect=[product, product])
     service.product_repo.update = AsyncMock(return_value=product)
     service.category_repo.get_by_name = AsyncMock(return_value=category)
-    service.cache.invalidate_category_list_cache.side_effect = RuntimeError("cache")
-
-    result = await service.update_product(
-        product_id=product.id,
-        payload=ProductUpdate(category_name="New category"),
-        images=[],
-        request_id="request",
+    service.cache.invalidate_category_list_cache = AsyncMock(
+        side_effect=RuntimeError("cache")
     )
 
+    with patch("app.services.product_service.logger.error") as mock_logger_error:
+        result = await service.update_product(
+            product_id=product.id,
+            payload=ProductUpdate(category_name="New category"),
+            images=[],
+            request_id="request",
+        )
+
     assert result is product
+    assert product.category_id == category.id
+    service.cache.invalidate_category_list_cache.assert_awaited()
+    mock_logger_error.assert_called()
 
 
 @pytest.mark.asyncio
@@ -658,11 +689,18 @@ async def test_delete_product_logs_s3_cleanup_queue_failure():
     service = make_service()
     product = Product(id=uuid4(), name="Phone", sku="PHONE-1")
     product.images = []
+
     service.product_repo.get_by_id = AsyncMock(return_value=product)
     service.product_repo.delete = AsyncMock()
     service._enqueue_s3_cleanup = AsyncMock(side_effect=RuntimeError("queue"))
 
-    await service.delete_product(product.id, "request")
+    with patch(
+        "app.services.product_service.logger.exception"
+    ) as mock_logger_exception:
+        await service.delete_product(product.id, "request")
+
+    mock_logger_exception.assert_called()
+    service.db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

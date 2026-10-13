@@ -63,7 +63,6 @@ async def test_logging_middleware_logs_request_and_adds_request_id():
 @pytest.mark.asyncio
 async def test_logging_middleware_sets_request_context():
     request = MagicMock()
-
     request.method = "POST"
     request.url.path = "/api/v1/products"
 
@@ -71,7 +70,12 @@ async def test_logging_middleware_sets_request_context():
     response.status_code = 201
     response.headers = {}
 
+    call_count = 0
+
     async def call_next(request):
+        nonlocal call_count
+        call_count += 1
+
         assert request_id_ctx.get() == "request-456"
         assert method_ctx.get() == "POST"
         assert path_ctx.get() == "/api/v1/products"
@@ -85,12 +89,10 @@ async def test_logging_middleware_sets_request_context():
         "generate_request_id",
         return_value="request-456",
     ):
-        result = await middleware.dispatch(
-            request,
-            call_next,
-        )
+        result = await middleware.dispatch(request, call_next)
 
     assert result is response
+    assert call_count == 1
 
 
 @pytest.mark.asyncio
