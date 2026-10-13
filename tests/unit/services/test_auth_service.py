@@ -772,3 +772,31 @@ async def test_start_oauth_state_storage_failure(
         await test_auth_service.start_oauth("google")
 
     test_auth_service.oauth_state_repo.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_invalid_state(test_auth_service):
+    test_auth_service.oauth_state_repo.consume = AsyncMock(return_value=None)
+
+    with pytest.raises(UnauthorizedException):
+        await test_auth_service.oauth_callback(
+            provider="google",
+            code="test-authorization-code",
+            state="invalid-state",
+        )
+
+    test_auth_service.oauth_state_repo.consume.assert_awaited_once_with("invalid-state")
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_provider_mismatch(test_auth_service):
+    test_auth_service.oauth_state_repo.consume = AsyncMock(return_value="github")
+
+    with pytest.raises(UnauthorizedException):
+        await test_auth_service.oauth_callback(
+            provider="google",
+            code="test-authorization-code",
+            state="valid-state",
+        )
+
+    test_auth_service.oauth_state_repo.consume.assert_awaited_once_with("valid-state")

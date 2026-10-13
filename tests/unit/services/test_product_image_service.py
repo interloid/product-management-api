@@ -1,473 +1,225 @@
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from fastapi import UploadFile
 
-from app.exceptions.custom import NotFoundException
 from app.models.product_image_model import ProductImage
 from app.services.product_image_service import ProductImageService
 
 
-@pytest.mark.asyncio
-async def test_upload_image_creates_product_image():
-    product_id = uuid4()
-    data = b"fake image"
-
+def make_service():
     repo = MagicMock()
-    s3_service = MagicMock()
-
-    s3_service.upload_file = AsyncMock()
-
-    created_image = MagicMock()
-
-    repo.create = AsyncMock(
-        return_value=created_image,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.upload_image(
-        product_id=product_id,
-        data=data,
-        filename="iphone.jpg",
-        content_type="image/jpeg",
-    )
-
-    assert result is created_image
-
-    s3_service.upload_file.assert_awaited_once()
-
-    repo.create.assert_awaited_once()
+    s3 = MagicMock()
+    s3.upload_file = AsyncMock()
+    s3.delete_file = AsyncMock()
+    repo.create = AsyncMock(side_effect=lambda image: image)
+    repo.set_primary = AsyncMock(side_effect=lambda image: image)
+    repo.delete = AsyncMock()
+    return ProductImageService(repo, s3), repo, s3
 
 
 @pytest.mark.asyncio
-async def test_upload_image_generates_object_key_with_extension():
-    product_id = uuid4()
-    data = b"fake image"
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    s3_service.upload_file = AsyncMock()
-
-    repo.create = AsyncMock(
-        side_effect=lambda image: image,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.upload_image(
-        product_id=product_id,
-        data=data,
-        filename="iphone.jpg",
-        content_type="image/jpeg",
-    )
-
-    object_key = result.object_key
-
-    assert object_key.startswith(
-        f"products/{product_id}/images/",
-    )
-
-    assert object_key.endswith(".jpg")
-
-    s3_service.upload_file.assert_awaited_once_with(
-        data=data,
-        object_key=object_key,
-        content_type="image/jpeg",
-    )
-
-
-@pytest.mark.asyncio
-async def test_upload_image_generates_object_key_without_extension():
-    product_id = uuid4()
-    data = b"fake image"
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    s3_service.upload_file = AsyncMock()
-
-    repo.create = AsyncMock(
-        side_effect=lambda image: image,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.upload_image(
-        product_id=product_id,
-        data=data,
-        filename="iphone",
-        content_type="image/jpeg",
-    )
-
-    assert result.object_key.startswith(
-        f"products/{product_id}/images/",
-    )
-
-    assert not result.object_key.endswith(".")
-
-
-@pytest.mark.asyncio
-async def test_get_image_returns_image():
-    product_id = uuid4()
-    image_id = uuid4()
-
-    image = ProductImage(
-        id=image_id,
-        product_id=product_id,
-        object_key="products/image.jpg",
-        is_primary=False,
-    )
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=image,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.get_image(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    assert result is image
-
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_image_raises_not_found_when_image_does_not_exist():
-    product_id = uuid4()
-    image_id = uuid4()
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=None,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    with pytest.raises(NotFoundException) as exc_info:
-        await service.get_image(
-            image_id=image_id,
-            product_id=product_id,
-        )
-
-    assert str(exc_info.value) == "Product image not found"
-
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_product_images_returns_images():
+async def test_upload_image_hashes_data_and_sets_primary():
+    service, repo, s3 = make_service()
     product_id = uuid4()
 
-    images = [
-        ProductImage(
-            id=uuid4(),
-            product_id=product_id,
-            object_key="products/image1.jpg",
-            is_primary=True,
-        ),
-        ProductImage(
-            id=uuid4(),
-            product_id=product_id,
-            object_key="products/image2.jpg",
-            is_primary=False,
-        ),
-    ]
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_product_id = AsyncMock(
-        return_value=images,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.get_product_images(
+    image = await service.upload_image(
         product_id=product_id,
-    )
-
-    assert result == images
-
-    repo.get_by_product_id.assert_awaited_once_with(
-        product_id=product_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_product_images_returns_empty_list_when_no_images():
-    product_id = uuid4()
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_product_id = AsyncMock(
-        return_value=[],
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.get_product_images(
-        product_id=product_id,
-    )
-
-    assert result == []
-
-    repo.get_by_product_id.assert_awaited_once_with(
-        product_id=product_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_set_primary_image_sets_non_primary_image():
-    product_id = uuid4()
-    image_id = uuid4()
-
-    image = ProductImage(
-        id=image_id,
-        product_id=product_id,
-        object_key="products/image.jpg",
-        is_primary=False,
-    )
-
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=image,
-    )
-
-    repo.set_primary = AsyncMock(
-        return_value=image,
-    )
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.set_primary_image(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    assert result is image
-
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    repo.set_primary.assert_awaited_once_with(image)
-
-
-@pytest.mark.asyncio
-async def test_set_primary_image_returns_image_when_already_primary():
-    product_id = uuid4()
-    image_id = uuid4()
-
-    image = ProductImage(
-        id=image_id,
-        product_id=product_id,
-        object_key="products/image.jpg",
+        data=b"content",
+        filename="photo.png",
+        content_type="image/png",
         is_primary=True,
     )
 
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=image,
+    assert isinstance(image, ProductImage)
+    assert image.product_id == product_id
+    assert image.content_hash == (
+        "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73"
     )
-
-    repo.set_primary = AsyncMock()
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    result = await service.set_primary_image(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    assert result is image
-
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    repo.set_primary.assert_not_awaited()
+    assert image.is_primary is False
+    repo.set_primary.assert_awaited_once_with(image)
+    s3.delete_file.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_set_primary_image_raises_not_found_when_image_does_not_exist():
-    product_id = uuid4()
-    image_id = uuid4()
+async def test_upload_image_cleans_up_after_repository_create_failure():
+    service, repo, s3 = make_service()
+    repo.create.side_effect = RuntimeError("database unavailable")
 
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=None,
-    )
-
-    repo.set_primary = AsyncMock()
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    with pytest.raises(NotFoundException) as exc_info:
-        await service.set_primary_image(
-            image_id=image_id,
-            product_id=product_id,
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.upload_image(
+            product_id=uuid4(),
+            data=b"content",
+            filename="photo.png",
+            content_type="image/png",
+            content_hash="hash",
         )
 
-    assert str(exc_info.value) == "Product image not found"
-
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
-        product_id=product_id,
-    )
-
-    repo.set_primary.assert_not_awaited()
+    s3.delete_file.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_delete_by_product_id_successfully():
-    product_id = uuid4()
+async def test_upload_image_reraises_when_cleanup_fails():
+    service, repo, s3 = make_service()
+    repo.create.side_effect = RuntimeError("database unavailable")
+    s3.delete_file.side_effect = RuntimeError("S3 unavailable")
 
-    image1 = MagicMock()
-    image1.object_key = "products/image1.jpg"
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.upload_image(
+            product_id=uuid4(),
+            data=b"content",
+            filename="photo.png",
+            content_type="image/png",
+            content_hash="hash",
+        )
 
-    image2 = MagicMock()
-    image2.object_key = "products/image2.jpg"
-
-    product_image_repo = MagicMock()
-    product_image_repo.get_by_product_id = AsyncMock(return_value=[image1, image2])
-
-    s3_service = MagicMock()
-    s3_service.delete_file = AsyncMock()
-
-    service = ProductImageService(
-        product_image_repo=product_image_repo,
-        s3_service=s3_service,
-    )
-
-    await service.delete_by_product_id(
-        product_id=product_id,
-    )
-
-    product_image_repo.get_by_product_id.assert_awaited_once_with(
-        product_id=product_id,
-    )
-
-    assert s3_service.delete_file.await_count == 2
-
-    s3_service.delete_file.assert_any_await(
-        object_key="products/image1.jpg",
-    )
-
-    s3_service.delete_file.assert_any_await(
-        object_key="products/image2.jpg",
-    )
+    s3.delete_file.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_delete_by_product_id_continues_when_one_s3_delete_fails():
+async def test_upload_image_cleans_up_after_set_primary_failure():
+    service, repo, s3 = make_service()
+    repo.set_primary.side_effect = RuntimeError("primary update failed")
+
+    with pytest.raises(RuntimeError, match="primary update failed"):
+        await service.upload_image(
+            product_id=uuid4(),
+            data=b"content",
+            filename="photo.png",
+            content_type="image/png",
+            content_hash="hash",
+            is_primary=True,
+        )
+
+    s3.delete_file.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_add_images_uploads_each_file():
+    service, repo, s3 = make_service()
     product_id = uuid4()
-    images = [
-        MagicMock(object_key="products/image1.jpg"),
-        MagicMock(object_key="products/image2.jpg"),
+    uploads = [
+        UploadFile(filename="one.png", file=BytesIO(b"one")),
+        UploadFile(filename="two", file=BytesIO(b"two")),
     ]
-    product_image_repo = MagicMock()
-    product_image_repo.get_by_product_id = AsyncMock(return_value=images)
-    s3_service = MagicMock()
-    s3_service.delete_file = AsyncMock(
-        side_effect=[RuntimeError("S3 unavailable"), None]
-    )
-    service = ProductImageService(
-        product_image_repo=product_image_repo,
-        s3_service=s3_service,
+
+    images = await service.add_images(
+        product_id=product_id,
+        images=uploads,
+        content_hashes=["hash-one", "hash-two"],
     )
 
-    await service.delete_by_product_id(product_id=product_id)
-
-    assert s3_service.delete_file.await_count == 2
+    assert len(images) == 2
+    assert repo.create.await_count == 2
+    assert s3.upload_file.await_count == 2
+    assert all(image.product_id == product_id for image in images)
 
 
 @pytest.mark.asyncio
-async def test_delete_image_raises_not_found_when_image_does_not_exist():
+async def test_add_images_rolls_back_prior_upload_when_later_upload_fails():
+    service, repo, s3 = make_service()
     product_id = uuid4()
-    image_id = uuid4()
+    uploads = [
+        UploadFile(filename="one.png", file=BytesIO(b"one")),
+        UploadFile(filename="two.png", file=BytesIO(b"two")),
+    ]
+    first_image = MagicMock(object_key="products/first.png", id=uuid4())
+    repo.create.side_effect = [first_image, RuntimeError("database unavailable")]
 
-    repo = MagicMock()
-    s3_service = MagicMock()
-
-    repo.get_by_id_and_product = AsyncMock(
-        return_value=None,
-    )
-
-    repo.delete = AsyncMock()
-    s3_service.delete_file = AsyncMock()
-
-    service = ProductImageService(
-        product_image_repo=repo,
-        s3_service=s3_service,
-    )
-
-    with pytest.raises(NotFoundException) as exc_info:
-        await service.delete_image(
-            image_id=image_id,
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.add_images(
             product_id=product_id,
+            images=uploads,
+            content_hashes=["hash-one", "hash-two"],
         )
 
-    assert str(exc_info.value) == "Product image not found"
+    repo.delete.assert_awaited_once()
+    # upload_image removes the failed second object; add_images removes the first.
+    assert s3.delete_file.await_count == 2
 
-    repo.get_by_id_and_product.assert_awaited_once_with(
-        image_id=image_id,
+
+@pytest.mark.asyncio
+async def test_add_images_logs_and_continues_if_rollback_cleanup_fails():
+    service, repo, s3 = make_service()
+    uploads = [
+        UploadFile(filename="one.png", file=BytesIO(b"one")),
+        UploadFile(filename="two.png", file=BytesIO(b"two")),
+    ]
+    first_image = MagicMock(object_key="products/first.png", id=uuid4())
+    repo.create.side_effect = [first_image, RuntimeError("database unavailable")]
+    repo.delete.side_effect = RuntimeError("delete failed")
+    s3.delete_file.side_effect = [
+        None,
+        RuntimeError("cleanup failed"),
+    ]
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.add_images(
+            product_id=uuid4(),
+            images=uploads,
+            content_hashes=["hash-one", "hash-two"],
+        )
+
+    repo.delete.assert_awaited_once()
+    assert s3.delete_file.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_add_images_rejects_different_number_of_hashes():
+    service, repo, s3 = make_service()
+    upload = UploadFile(filename="one.png", file=BytesIO(b"one"))
+
+    with pytest.raises(ValueError):
+        await service.add_images(
+            product_id=uuid4(),
+            images=[upload],
+            content_hashes=[],
+        )
+
+    repo.create.assert_not_awaited()
+    s3.delete_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_images_delegates_to_repository():
+    service, repo, _ = make_service()
+    ids = [uuid4(), uuid4()]
+    product_id = uuid4()
+    expected = [MagicMock(), MagicMock()]
+    repo.get_by_ids_and_product = AsyncMock(return_value=expected)
+
+    assert await service.get_images(image_ids=ids, product_id=product_id) == expected
+    repo.get_by_ids_and_product.assert_awaited_once_with(
+        image_ids=ids,
         product_id=product_id,
     )
 
-    s3_service.delete_file.assert_not_awaited()
-    repo.delete.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_delete_image_deletes_record_and_swallows_s3_failure():
+    service, repo, s3 = make_service()
+    image = ProductImage(
+        id=uuid4(),
+        product_id=uuid4(),
+        object_key="products/image.png",
+        is_primary=False,
+    )
+    repo.get_by_id_and_product = AsyncMock(return_value=image)
+    s3.delete_file.side_effect = RuntimeError("S3 unavailable")
+
+    await service.delete_image(image_id=image.id, product_id=image.product_id)
+
+    repo.delete.assert_awaited_once_with(image)
+    s3.delete_file.assert_awaited_once_with(object_key=image.object_key)
+
+
+@pytest.mark.asyncio
+async def test_delete_by_product_id_with_no_images_does_not_delete_objects():
+    service, repo, s3 = make_service()
+    repo.get_by_product_id = AsyncMock(return_value=[])
+
+    await service.delete_by_product_id(uuid4())
+
+    s3.delete_file.assert_not_awaited()
