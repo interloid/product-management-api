@@ -1,9 +1,16 @@
 # Product Management API
 
-A RESTful Product Management API built with FastAPI, PostgreSQL, SQLAlchemy, Redis, and Docker.
+A RESTful Product Management API built with FastAPI, PostgreSQL, SQLAlchemy, Redis, and Docker. The application includes authentication, role-based access control, product and image management, background processing, caching, and real-time server-to-client updates using Server-Sent Events (SSE).
 
 
 ## Deployment Link : 
+
+- API Base URL: https://product.fieldops.shop/
+
+- Swagger Documentation: https://product.fieldops.shop/docs
+
+- ReDoc: https://product.fieldops.shop/redoc
+  
 
 ## Tech Stack
 
@@ -14,13 +21,19 @@ A RESTful Product Management API built with FastAPI, PostgreSQL, SQLAlchemy, Red
 - Alembic
 - Redis
 - Pydantic
+- ARQ background jobs
 - Pytest
-- Docker
+- Docker and Docker Compose
 - Nginx
 - AWS EC2
+- Amazon S3
+- Amazon CloudFront
 - AWS CloudWatch
+- Server-Sent Events (SSE)
 
 ## Features
+
+### Authentication and Authorization
 
 - User registration and authentication
 - Role-based access control is enforced at the API boundary.
@@ -30,15 +43,44 @@ A RESTful Product Management API built with FastAPI, PostgreSQL, SQLAlchemy, Red
 - Google OAuth
 - Microsoft OAuth
 - Github OAuth
+  
+### Product Management
+
 - Product CRUD operations
 - Product image upload
-- Amazon S3 image storage
 - Product search and filtering
 - Pagination
 - Product sorting
+
+### Background Processing and Caching
+
+- ARQ background job processing
+- Redis-backed caching
+- Background email delivery
+- Background product-image processing and cleanup
+- Cache invalidation after product changes
+  
+### Real-Time Updates
+
+- Server-Sent Events (SSE) for server-to-client updates
+- Redis Pub/Sub for distributing events
+- SSE heartbeat and keep-alive handling
+- Subscriber reconnection handling
+- Event delivery through a dedicated SSE endpoint
+
+### Production and Observability
+
 - Request ID logging
-- CloudWatch application logging
+- Structured application logs
+- AWS CloudWatch log integration
+- Dockerized deployment
+- Nginx reverse proxy
+- Amazon S3 image storage
+- CloudFront image delivery
+
+### Testing
 - Unit tests with Pytest
+- Test coverage reporting
 
 ---
 
@@ -49,8 +91,11 @@ Before running the application locally, install:
 - Python 3.12+
 - PostgreSQL
 - Redis
+- uv
 - Docker
 - Docker Compose
+
+AWS S3, CloudFront, SMTP, and OAuth credentials are required only for the features that use those integrations.
 
 ---
 
@@ -96,19 +141,19 @@ uv sync
 Run all Alembic migrations:
 
 ```bash
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
 To create a new migration:
 
 ```bash
-alembic revision --autogenerate -m "your migration message"
+uv run alembic revision --autogenerate -m "your migration message"
 ```
 
 Then apply it:
 
 ```bash
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
 ---
@@ -118,7 +163,7 @@ alembic upgrade head
 Start FastAPI with Uvicorn:
 
 ```bash
-uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 The API will be available at:
@@ -184,6 +229,21 @@ docker compose exec api alembic upgrade head
 ```
 
 ---
+
+# Background Worker
+
+The application uses ARQ with Redis for background processing.
+
+If your deployed worker configuration uses WorkerSettings, start the worker with:
+
+```bash
+uv run arq app.workers.background_worker.WorkerSettings
+```
+
+The worker and API must use compatible application configuration and connect to the appropriate Redis instance.
+
+Background jobs may include email delivery, product-image processing, and S3 cleanup, depending on the registered job functions.
+
 
 # Testing
 
@@ -302,26 +362,42 @@ In production, Docker sends container logs to AWS CloudWatch.
 Production architecture:
 
 ```text
-Frontend
-   |
-   v
-Nginx
-   |
-   v
-Docker Container
-   |
-   v
-FastAPI
-   |
-   +---- PostgreSQL
-   |
-   +---- Redis
-   |
-   +---- Amazon S3
-   |
-   +---- SMTP
-   |
-   +---- CloudWatch Logs
+
+            Frontend
+                |
+                v
+              Nginx
+                |
+                v
+         FastAPI API Container
+           /      |       \
+          v       v        v
+    PostgreSQL  Redis    Amazon S3
+                  |
+                  v
+             ARQ Worker
+                  |
+                  v
+             Background Jobs
+
+
+
+FastAPI Services
+       |
+       v
+  Redis Pub/Sub
+       |
+       v
+   SSE Endpoint
+       |
+       v
+  Frontend Client
+
+Amazon S3 ---> CloudFront ---> Image Delivery
+
+Docker Logs ---> AWS CloudWatch
+
+
 ```
 
 Production server:
@@ -418,8 +494,8 @@ app/
 └── utils/
 
 tests/
-├── unit/
-└── ...
+├── integration/
+└── unit/
 
 alembic/
 ├── versions/
