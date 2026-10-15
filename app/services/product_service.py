@@ -211,13 +211,17 @@ class ProductService(BaseService[Product]):
             logger.warning("Category not found | category=%s", category)
             raise NotFoundException(message="Category not found")
 
+        status = (
+            ProductStatusEnum.OUT_OF_STOCK if payload.stock == 0 else payload.status
+        )
+
         product = Product(
             name=payload.name,
             sku=payload.sku,
             category_id=category.id,
             price=payload.price,
             stock=payload.stock,
-            status=payload.status,
+            status=status,
             description=payload.description,
         )
 
@@ -553,6 +557,9 @@ class ProductService(BaseService[Product]):
 
         for field, value in updates.items():
             setattr(product, field, value)
+
+        if product.stock == 0:
+            product.status = ProductStatusEnum.OUT_OF_STOCK
 
         images_to_delete: list[str] = []
         staging_object_keys: list[str] = []

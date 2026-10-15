@@ -723,3 +723,162 @@ async def test_enqueue_s3_cleanup_queues_keys():
         ["products/image.png"],
         _expires=86_400,
     )
+
+
+@pytest.mark.asyncio
+async def test_create_product_zero_stock_sets_out_of_stock():
+    service = make_service()
+
+    payload = ProductCreate(
+        name="Test Product",
+        sku="TEST-001",
+        category_name="Electronics",
+        price=100,
+        stock=0,
+        status=ProductStatusEnum.ACTIVE,
+        description="Test description",
+    )
+
+    category = Category(id=uuid4(), name="Electronics")
+    service.category_repo.get_by_name.return_value = category
+    service.product_repo.get_by_sku.return_value = None
+
+    result = await service.create_product(
+        payload=payload,
+        images=[],
+        request_id="test-request",
+    )
+
+    assert result.stock == 0
+    assert result.status == ProductStatusEnum.OUT_OF_STOCK
+
+
+@pytest.mark.asyncio
+async def test_update_product_zero_stock_sets_out_of_stock():
+
+    service = make_service()
+
+    product = Product(
+        id=uuid4(),
+        name="Test Product",
+        sku="TEST-001",
+        category_id=uuid4(),
+        price=100,
+        stock=10,
+        status=ProductStatusEnum.ACTIVE,
+        description="Test description",
+    )
+
+    service.product_repo.get_by_id.return_value = product
+    service.product_repo.update.return_value = product
+
+    payload = ProductUpdate(stock=0)
+
+    result = await service.update_product(
+        product_id=product.id,
+        payload=payload,
+        images=[],
+        request_id="test-request",
+    )
+
+    assert result.stock == 0
+    assert result.status == ProductStatusEnum.OUT_OF_STOCK
+
+
+@pytest.mark.asyncio
+async def test_update_product_zero_stock_overrides_active_status():
+    service = make_service()
+
+    product = Product(
+        id=uuid4(),
+        name="Test Product",
+        sku="TEST-001",
+        category_id=uuid4(),
+        price=100,
+        stock=10,
+        status=ProductStatusEnum.ACTIVE,
+        description="Test description",
+    )
+
+    service.product_repo.get_by_id.return_value = product
+    service.product_repo.update.return_value = product
+
+    payload = ProductUpdate(
+        stock=0,
+        status=ProductStatusEnum.ACTIVE,
+    )
+
+    result = await service.update_product(
+        product_id=product.id,
+        payload=payload,
+        images=[],
+        request_id="test-request",
+    )
+
+    assert result.stock == 0
+    assert result.status == ProductStatusEnum.OUT_OF_STOCK
+
+
+@pytest.mark.asyncio
+async def test_update_product_name_keeps_zero_stock_out_of_stock():
+
+    service = make_service()
+
+    product = Product(
+        id=uuid4(),
+        name="Old Name",
+        sku="TEST-001",
+        category_id=uuid4(),
+        price=100,
+        stock=0,
+        status=ProductStatusEnum.ACTIVE,
+        description="Test description",
+    )
+
+    service.product_repo.get_by_id.return_value = product
+    service.product_repo.update.return_value = product
+
+    payload = ProductUpdate(name="New Name")
+
+    result = await service.update_product(
+        product_id=product.id,
+        payload=payload,
+        images=[],
+        request_id="test-request",
+    )
+
+    assert result.name == "New Name"
+    assert result.stock == 0
+    assert result.status == ProductStatusEnum.OUT_OF_STOCK
+
+
+@pytest.mark.asyncio
+async def test_update_product_restock_preserves_existing_status():
+
+    service = make_service()
+
+    product = Product(
+        id=uuid4(),
+        name="Test Product",
+        sku="TEST-001",
+        category_id=uuid4(),
+        price=100,
+        stock=0,
+        status=ProductStatusEnum.OUT_OF_STOCK,
+        description="Test description",
+    )
+
+    service.product_repo.get_by_id.return_value = product
+    service.product_repo.update.return_value = product
+
+    payload = ProductUpdate(stock=10)
+
+    result = await service.update_product(
+        product_id=product.id,
+        payload=payload,
+        images=[],
+        request_id="test-request",
+    )
+
+    assert result.stock == 10
+    assert result.status == ProductStatusEnum.OUT_OF_STOCK
