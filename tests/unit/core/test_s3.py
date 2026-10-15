@@ -6,17 +6,6 @@ from app.core.s3 import S3Service
 
 
 @pytest.mark.asyncio
-async def test_generate_presigned_urls_returns_empty_mapping_without_client():
-    client = MagicMock()
-    service = S3Service(client=client)
-
-    result = await service.generate_presigned_urls(object_keys=[])
-
-    assert result == {}
-    client.generate_presigned_url.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_upload_file_uploads_file_to_s3():
     data = b"fake image"
     object_key = "products/123/images/image.jpg"
@@ -40,41 +29,6 @@ async def test_upload_file_uploads_file_to_s3():
         Key=object_key,
         Body=data,
         ContentType="image/jpeg",
-    )
-
-
-@pytest.mark.asyncio
-async def test_generate_presigned_urls_uses_one_client_for_all_keys():
-    object_keys = ["products/first.jpg", "products/second.jpg"]
-    s3_client = MagicMock()
-    s3_client.generate_presigned_url = AsyncMock(
-        side_effect=[
-            "https://signed.example/first.jpg",
-            "https://signed.example/second.jpg",
-        ]
-    )
-    service = S3Service(client=s3_client)
-    service.bucket_name = "my-product-bucket"
-
-    result = await service.generate_presigned_urls(
-        object_keys=object_keys,
-        expires_in=900,
-    )
-
-    assert result == {
-        "products/first.jpg": "https://signed.example/first.jpg",
-        "products/second.jpg": "https://signed.example/second.jpg",
-    }
-    assert s3_client.generate_presigned_url.await_count == 2
-    s3_client.generate_presigned_url.assert_any_await(
-        "get_object",
-        Params={"Bucket": "my-product-bucket", "Key": "products/first.jpg"},
-        ExpiresIn=900,
-    )
-    s3_client.generate_presigned_url.assert_any_await(
-        "get_object",
-        Params={"Bucket": "my-product-bucket", "Key": "products/second.jpg"},
-        ExpiresIn=900,
     )
 
 

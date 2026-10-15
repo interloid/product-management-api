@@ -90,8 +90,15 @@ async def get_current_user(
     if refresh_token is None:
         raise UnauthorizedException(message="Authentication required")
 
-    user, renewed_access_token = await service.renew_access_token(refresh_token)
+    (
+        user,
+        renewed_access_token,
+        renewed_refresh_token,
+        refresh_max_age,
+    ) = await service.renew_access_token(refresh_token)
 
     request.state.renewed_access_token = renewed_access_token
+    request.state.renewed_refresh_token = renewed_refresh_token
+    request.state.refresh_max_age = refresh_max_age
     request.state.rate_limit_user_id = str(user.id)
     return user

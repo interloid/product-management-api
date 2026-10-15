@@ -48,6 +48,7 @@ def auth_app(monkeypatch):
 
     service.refresh_token_repo = AsyncMock()
     service.refresh_token_repo.get_by_token_hash.return_value = stored
+    service.refresh_token_repo.get_by_token_hash_for_update.return_value = stored
 
     service.user_repo = AsyncMock()
     service.user_repo.get_by_id.return_value = user
@@ -55,6 +56,7 @@ def auth_app(monkeypatch):
     monkeypatch.setattr(UserRepository, "get_by_id", AsyncMock(return_value=user))
 
     app = FastAPI()
+    app.state.redis = AsyncMock()
 
     app.add_middleware(AuthCookieMiddleware)
     register_exception_handlers(app)
@@ -118,7 +120,8 @@ async def test_request_renews_missing_or_expired_access(auth_app, expired):
         assert decode_token(access)["sub"] == str(user.id)
 
         cookies = SimpleCookie()
-        cookies.load(response.headers["set-cookie"])
+        for header in response.headers.get_list("set-cookie"):
+            cookies.load(header)
 
         cookie = cookies[settings.ACCESS_TOKEN_COOKIE_NAME]
         assert cookie["secure"] and cookie["httponly"]
@@ -126,15 +129,19 @@ async def test_request_renews_missing_or_expired_access(auth_app, expired):
         assert cookie["samesite"] == "lax" and cookie["path"] == "/"
         assert cookie["max-age"] == str(settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
 
-        assert settings.REFRESH_TOKEN_COOKIE_NAME not in response.cookies
+        refresh_cookie = cookies[settings.REFRESH_TOKEN_COOKIE_NAME]
+        assert refresh_cookie["secure"] and refresh_cookie["httponly"]
+        assert refresh_cookie["samesite"] == "lax" and refresh_cookie["path"] == "/"
+        assert int(refresh_cookie["max-age"]) > 0
+        assert settings.REFRESH_TOKEN_COOKIE_NAME in response.cookies
         second = await client.get("/auth/me")
         assert second.status_code == 200
         assert "set-cookie" not in second.headers
-    service.refresh_token_repo.get_by_token_hash.assert_awaited_once_with(
+    service.refresh_token_repo.get_by_token_hash_for_update.assert_awaited_once_with(
         hash_refresh_token("refresh")
     )
-    service.refresh_token_repo.create.assert_not_awaited()
-    assert stored.is_revoked is False and stored.expires_at == expires_at
+    service.refresh_token_repo.create.assert_awaited_once()
+    assert stored.is_revoked is True and stored.expires_at == expires_at
 
 
 @pytest.mark.parametrize(
@@ -171,7 +178,7 @@ async def test_does_not_refresh_valid_or_invalid_access(auth_app, access_kind):
         response = await client.get("/auth/me", headers=cookie_header(access))
     assert response.status_code == (200 if access_kind == "valid" else 401)
     assert "set-cookie" not in response.headers
-    service.refresh_token_repo.get_by_token_hash.assert_not_awaited()
+    service.refresh_token_repo.get_by_token_hash_for_update.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -180,7 +187,7 @@ async def test_does_not_refresh_valid_or_invalid_access(auth_app, access_kind):
 async def test_rejects_unusable_refresh_session(auth_app, reason):
     app, service, user, stored = auth_app
     if reason == "unknown":
-        service.refresh_token_repo.get_by_token_hash.return_value = None
+        service.refresh_token_repo.get_by_token_hash_for_update.return_value = None
     elif reason == "expired":
         stored.expires_at = utc_now() - timedelta(seconds=1)
     elif reason == "revoked":
@@ -206,7 +213,7 @@ async def test_rejects_unusable_refresh_session(auth_app, reason):
         service.db.commit.assert_awaited_once()
 
 
-async def test_concurrent_requests_execute_once_each_without_rotation(auth_app):
+async def test_concurrent_requests_rotate_refresh_token_once(auth_app):
     app, service, user, stored = auth_app
     async with AsyncClient(
         transport=ASGITransport(app), base_url="https://test"
@@ -217,14 +224,15 @@ async def test_concurrent_requests_execute_once_each_without_rotation(auth_app):
                 for _ in range(3)
             )
         )
-    assert all(response.status_code == 204 for response in responses)
-    assert all(
-        settings.ACCESS_TOKEN_COOKIE_NAME in response.cookies for response in responses
-    )
-    assert app.state.executions == 3
-    assert stored.is_revoked is False
-    service.refresh_token_repo.create.assert_not_awaited()
-    service.refresh_token_repo.revoke_family.assert_not_awaited()
+    assert [response.status_code for response in responses].count(204) == 1
+    assert [response.status_code for response in responses].count(401) == 2
+    successful = next(response for response in responses if response.status_code == 204)
+    assert settings.ACCESS_TOKEN_COOKIE_NAME in successful.cookies
+    assert settings.REFRESH_TOKEN_COOKIE_NAME in successful.cookies
+    assert app.state.executions == 1
+    assert stored.is_revoked is True
+    service.refresh_token_repo.create.assert_awaited_once()
+    service.refresh_token_repo.revoke_family.assert_awaited()
 
 
 async def test_permission_denial_still_delivers_renewed_cookie(auth_app):
@@ -264,4 +272,4 @@ async def test_public_request_does_not_refresh(auth_app):
         )
     assert response.status_code == 200
     assert "set-cookie" not in response.headers
-    service.refresh_token_repo.get_by_token_hash.assert_not_awaited()
+    service.refresh_token_repo.get_by_token_hash_for_update.assert_not_awaited()

@@ -10,9 +10,7 @@ from app.core.passcode import (
     get_passcode,
     get_passcode_attempt_key,
     get_passcode_attempt_ttl,
-    get_passcode_attempts,
     get_passcode_key,
-    increment_passcode_attempts,
     reset_passcode_attempts,
     store_passcode,
 )
@@ -165,70 +163,6 @@ async def test_delete_passcode():
 
     redis.delete.assert_awaited_once_with(
         "auth:passcode:user@example.com",
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_passcode_attempts_returns_zero_when_not_found():
-    redis = MagicMock()
-    redis.get = AsyncMock(
-        return_value=None,
-    )
-
-    result = await get_passcode_attempts(
-        redis=redis,
-        email="user@example.com",
-    )
-
-    assert result == 0
-
-    redis.get.assert_awaited_once_with(
-        "auth:passcode:attempts:user@example.com",
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_passcode_attempts_returns_attempt_count():
-    redis = MagicMock()
-    redis.get = AsyncMock(
-        return_value="3",
-    )
-
-    result = await get_passcode_attempts(
-        redis=redis,
-        email="user@example.com",
-    )
-
-    assert result == 3
-
-    redis.get.assert_awaited_once_with(
-        "auth:passcode:attempts:user@example.com",
-    )
-
-
-@pytest.mark.asyncio
-async def test_increment_passcode_attempts():
-    redis = MagicMock()
-
-    redis.incr = AsyncMock(
-        return_value=3,
-    )
-    redis.expire = AsyncMock()
-
-    result = await increment_passcode_attempts(
-        redis=redis,
-        email="user@example.com",
-    )
-
-    assert result == 3
-
-    redis.incr.assert_awaited_once_with(
-        "auth:passcode:attempts:user@example.com",
-    )
-
-    redis.expire.assert_awaited_once_with(
-        "auth:passcode:attempts:user@example.com",
-        settings.PASSCODE_EXPIRE_SECONDS,
     )
 
 

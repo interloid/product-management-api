@@ -72,10 +72,6 @@ class Settings(BaseSettings):
     PASSCODE_REQUEST_IP_LIMIT: int = 10
     PASSCODE_REQUEST_WINDOW_SECONDS: int = 900
 
-    PRODUCT_CACHE_TTL: int = 300
-    PRODUCT_LIST_CACHE_TTL: int = 60
-    CATEGORY_CACHE_TTL: int = 3600
-
     CORS_ORIGINS: str
     YOUR_REACT_URL: str
 

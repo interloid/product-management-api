@@ -66,12 +66,10 @@ async def consume_passcode(redis: Redis, email: str, expected_hash: str) -> bool
 
 
 async def get_passcode_attempts(redis: Redis, email: str) -> int:
+    key = get_passcode_attempt_key(email)
+    attempts = await redis.get(key)
 
-    return await _increment_with_window(
-        redis,
-        get_passcode_attempt_key(email),
-        settings.PASSCODE_EXPIRE_SECONDS,
-    )
+    return int(attempts or 0)
 
 
 async def get_passcode_attempt_ttl(redis: Redis, email: str) -> int:
@@ -83,19 +81,11 @@ async def get_passcode_attempt_ttl(redis: Redis, email: str) -> int:
 
 
 async def increment_passcode_attempts(redis: Redis, email: str) -> int:
-    key = get_passcode_attempt_key(email)
-
-    added = await redis.set(
-        key,
-        1,
-        ex=settings.PASSCODE_EXPIRE_SECONDS,
-        nx=True,
+    return await _increment_with_window(
+        redis,
+        get_passcode_attempt_key(email),
+        settings.PASSCODE_EXPIRE_SECONDS,
     )
-
-    if added:
-        return 1
-
-    return await redis.incr(key)
 
 
 async def _increment_with_window(

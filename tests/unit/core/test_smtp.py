@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from app.core.settings import settings
 from app.core.smtp import send_email
@@ -59,10 +60,15 @@ async def test_send_email_sends_html_email():
 
 @pytest.mark.asyncio
 async def test_send_email_uses_smtp_settings():
-    with patch(
-        "app.core.smtp.aiosmtplib.send",
-        new_callable=AsyncMock,
-    ) as mock_send:
+    test_password = SecretStr("test-smtp-password")
+
+    with (
+        patch.object(settings, "SMTP_PASSWORD", test_password),
+        patch(
+            "app.core.smtp.aiosmtplib.send",
+            new_callable=AsyncMock,
+        ) as mock_send,
+    ):
         await send_email(
             to_email="user@example.com",
             subject="Test",
@@ -76,8 +82,8 @@ async def test_send_email_uses_smtp_settings():
     assert kwargs["hostname"] == settings.SMTP_HOST
     assert kwargs["port"] == settings.SMTP_PORT
     assert kwargs["username"] == settings.SMTP_USERNAME
-    assert kwargs["password"] == settings.SMTP_PASSWORD.get_secret_value()
-    assert kwargs["start_tls"] == (settings.SMTP_START_TLS)
+    assert kwargs["password"] == test_password.get_secret_value()
+    assert kwargs["start_tls"] == settings.SMTP_START_TLS
 
 
 @pytest.mark.asyncio

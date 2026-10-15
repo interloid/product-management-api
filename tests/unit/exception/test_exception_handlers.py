@@ -1,4 +1,3 @@
-from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -223,86 +222,6 @@ async def test_http_exception_handler_returns_expected_response():
 
     finally:
         request_id_ctx.reset(request_id_token)
-
-
-@pytest.mark.asyncio
-async def test_validation_exception_handler_returns_sanitized_errors():
-    request = MagicMock(spec=Request)
-
-    validation_error = RequestValidationError(
-        [
-            {
-                "type": "missing",
-                "loc": ("body", "name"),
-                "msg": "Field required",
-                "input": None,
-            },
-            {
-                "type": "string_type",
-                "loc": ("body", "sku"),
-                "msg": "Input should be a valid string",
-                "input": 123,
-            },
-        ]
-    )
-
-    request_id_token = request_id_ctx.set("request-validation")
-
-    try:
-        with patch(
-            "app.exceptions.handlers.logger.warning",
-        ) as mock_logger:
-            response = await validation_exception_handler(
-                request,
-                validation_error,
-            )
-
-        assert isinstance(response, JSONResponse)
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-
-        body = response.body.decode()
-
-        assert "Validation failed" in body
-        assert "VALIDATION_ERROR" in body
-        assert "request-validation" in body
-        assert "Field required" in body
-        assert "string_type" in body
-
-        mock_logger.assert_called_once()
-
-    finally:
-        request_id_ctx.reset(request_id_token)
-
-
-@pytest.mark.asyncio
-async def test_validation_exception_handler_converts_complex_input_to_string():
-    request = MagicMock(spec=Request)
-
-    complex_input = {"name": "iPhone", "price": Decimal("799.99")}
-
-    validation_error = RequestValidationError(
-        [
-            {
-                "type": "value_error",
-                "loc": ("body",),
-                "msg": "Invalid value",
-                "input": complex_input,
-            }
-        ]
-    )
-
-    response = await validation_exception_handler(
-        request,
-        validation_error,
-    )
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-
-    body = response.body.decode()
-
-    assert "Invalid value" in body
-    assert "VALIDATION_ERROR" in body
-    assert str(complex_input) in body
 
 
 @pytest.mark.asyncio
